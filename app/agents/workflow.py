@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from typing import Any, Dict, TypedDict
 
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -25,8 +26,11 @@ from app.prompts.templates import (
 from app.utils.config import get_model_name
 
 try:
-    from langfuse.callback import CallbackHandler
-except Exception:  # pragma: no cover - optional dependency path
+    from langfuse import Langfuse, get_client
+    from langfuse.langchain import CallbackHandler
+except Exception:  # pragma: no cover
+    Langfuse = None
+    get_client = None
     CallbackHandler = None
 
 
@@ -39,9 +43,23 @@ class GroundTruthState(TypedDict, total=False):
 
 
 def _langfuse_callbacks() -> list:
-    if CallbackHandler is None:
+    if CallbackHandler is None or Langfuse is None:
         return []
+
+    public_key = os.getenv("LANGFUSE_PUBLIC_KEY")
+    secret_key = os.getenv("LANGFUSE_SECRET_KEY")
+    host = os.getenv("LANGFUSE_BASE_URL", "https://us.cloud.langfuse.com")
+
+    if not public_key or not secret_key:
+        return []
+
     try:
+        Langfuse(
+            public_key=public_key,
+            secret_key=secret_key,
+            host=host,
+        )
+        get_client()
         return [CallbackHandler()]
     except Exception:
         return []
@@ -62,7 +80,10 @@ class GroundTruthEngine:
             [SystemMessage(content=SYSTEM_PROMPT), HumanMessage(content=prompt)],
             config={
                 "callbacks": self.callbacks,
-                "metadata": {"app": "groundtruth-mvp"},
+                "metadata": {
+                    "app": "groundtruth-mvp",
+                    "langfuse_session_id": "groundtruth-session",
+                },
                 "tags": ["groundtruth", schema.__name__.lower()],
             },
         )
@@ -116,7 +137,14 @@ class GroundTruthEngine:
     def run(self, submission: IntakeSubmission) -> GroundTruthOutput:
         result = self.graph.invoke(
             {"submission": submission},
-            config={"callbacks": self.callbacks, "run_name": "groundtruth_pipeline"},
+            config={
+                "callbacks": self.callbacks,
+                "run_name": "groundtruth_pipeline",
+                "metadata": {
+                    "langfuse_session_id": "groundtruth-session",
+                    "langfuse_user_id": "pm-demo-user",
+                },
+            },
         )
         return GroundTruthOutput(
             intake=submission.model_dump(),
