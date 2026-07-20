@@ -33,21 +33,25 @@ def render_form(label: str, intake_type: IntakeType, placeholder: str):
             placeholder=placeholder,
         )
         submitted = st.form_submit_button("Generate artifacts")
-        if submitted:
-            if not provider_configured():
-                st.error("No Gemini API key found. Set GOOGLE_API_KEY or GEMINI_API_KEY in your environment.")
-                return
-            if not text.strip():
-                st.warning("Please enter some product context.")
-                return
-            with st.spinner("GroundTruth is generating executable specs, HLD, and PRD..."):
-                engine = get_engine()
-                result = engine.run(
-                    IntakeSubmission(intake_type=intake_type, raw_text=text.strip())
-                )
-                st.session_state["last_markdown"] = engine.to_markdown(result)
-                st.success("Artifacts generated.")
-                show_output(result)
+
+    if submitted:
+        if not provider_configured():
+            st.error("No Gemini API key found. Set GOOGLE_API_KEY or GEMINI_API_KEY in your environment.")
+            return
+        if not text.strip():
+            st.warning("Please enter some product context.")
+            return
+        with st.spinner("GroundTruth is generating executable specs, HLD, and PRD..."):
+            engine = get_engine()
+            result = engine.run(
+                IntakeSubmission(intake_type=intake_type, raw_text=text.strip())
+            )
+            st.session_state["last_markdown"] = engine.to_markdown(result)
+            st.session_state["last_result"] = result
+            st.success("Artifacts generated.")
+
+    if st.session_state.get("last_result"):
+        show_output(st.session_state["last_result"])
 
 
 def show_output(result):
@@ -93,6 +97,12 @@ def home():
     st.markdown(
         "A simple PM intake-to-artifacts MVP. Paste raw product text into one of four forms and generate grounded outputs: executable specifications, high-level design, and PRD."
     )
+
+    if "last_result" not in st.session_state:
+        st.session_state["last_result"] = None
+    if "last_markdown" not in st.session_state:
+        st.session_state["last_markdown"] = ""
+
     if not provider_configured():
         st.info("UI is running, but generation requires a Gemini API key in the environment.")
 
