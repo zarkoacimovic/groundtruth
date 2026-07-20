@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import os
+import sys
+
+sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 
 import streamlit as st
 
@@ -18,6 +21,10 @@ def get_engine() -> GroundTruthEngine:
     return GroundTruthEngine()
 
 
+def provider_configured() -> bool:
+    return bool(os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY"))
+
+
 def render_form(label: str, intake_type: IntakeType, placeholder: str):
     with st.form(key=f"form_{intake_type.value}"):
         text = st.text_area(
@@ -27,6 +34,9 @@ def render_form(label: str, intake_type: IntakeType, placeholder: str):
         )
         submitted = st.form_submit_button("Generate artifacts")
         if submitted:
+            if not provider_configured():
+                st.error("No Gemini API key found. Set GOOGLE_API_KEY or GEMINI_API_KEY in your environment.")
+                return
             if not text.strip():
                 st.warning("Please enter some product context.")
                 return
@@ -71,6 +81,7 @@ def sidebar():
     st.sidebar.markdown(f"**Model**: `{get_model_name()}`")
     st.sidebar.markdown(f"**LangSmith tracing**: `{tracing_enabled()}`")
     st.sidebar.markdown(f"**Langfuse configured**: `{bool(os.getenv('LANGFUSE_PUBLIC_KEY'))}`")
+    st.sidebar.markdown(f"**Gemini configured**: `{provider_configured()}`")
     st.sidebar.markdown("---")
     st.sidebar.markdown("### Future integrations")
     for item in planned_integrations():
@@ -82,6 +93,8 @@ def home():
     st.markdown(
         "A simple PM intake-to-artifacts MVP. Paste raw product text into one of four forms and generate grounded outputs: executable specifications, high-level design, and PRD."
     )
+    if not provider_configured():
+        st.info("UI is running, but generation requires a Gemini API key in the environment.")
 
     tabs = st.tabs(
         [
