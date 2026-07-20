@@ -127,31 +127,124 @@ class GroundTruthEngine:
         )
 
     @staticmethod
+    def _add_bullet_list(blocks: list[str], items: list[str]) -> None:
+        if not items:
+            blocks.append("- None provided")
+            return
+        for item in items:
+            blocks.append(f"- {item}")
+
+    @staticmethod
     def to_markdown(output: GroundTruthOutput) -> str:
         blocks = [
             f"# GroundTruth Output: {output.insight.title}",
+            "",
             "## Intake",
-            f"- Type: {output.intake.intake_type.value}",
-            f"- Submitted at: {output.intake.submitted_at}",
+            f"- **Type:** {output.intake.intake_type.value.replace('_', ' ').title()}",
+            f"- **Submitted at:** {output.intake.submitted_at}",
             "",
-            "## Insight Summary",
-            "```json",
-            json.dumps(output.insight.model_dump(), indent=2),
-            "```",
+            "## 1. Insight Summary",
+            f"**Title:** {output.insight.title}",
             "",
-            "## Executable Specification",
-            "```json",
-            json.dumps(output.executable_spec.model_dump(), indent=2),
-            "```",
+            "**Problem Statement**",
+            output.insight.problem_statement,
             "",
-            "## High-Level Design",
-            "```json",
-            json.dumps(output.high_level_design.model_dump(), indent=2),
-            "```",
+            "**Business Impact**",
+            output.insight.business_impact,
             "",
-            "## PRD",
-            "```json",
-            json.dumps(output.prd.model_dump(), indent=2),
-            "```",
+            "**User Segments**",
         ]
+
+        GroundTruthEngine._add_bullet_list(blocks, output.insight.user_segments)
+        blocks.extend([
+            "",
+            "**Assumptions**",
+        ])
+        GroundTruthEngine._add_bullet_list(blocks, output.insight.assumptions)
+        blocks.extend([
+            "",
+            "**Risks**",
+        ])
+        GroundTruthEngine._add_bullet_list(blocks, output.insight.risks)
+
+        blocks.extend([
+            "",
+            "## 2. Executable Specification",
+            "**Summary**",
+            output.executable_spec.summary,
+            "",
+            "**User Stories**",
+        ])
+        GroundTruthEngine._add_bullet_list(blocks, output.executable_spec.user_stories)
+        blocks.extend([
+            "",
+            "**Acceptance Criteria**",
+        ])
+        GroundTruthEngine._add_bullet_list(blocks, output.executable_spec.acceptance_criteria)
+        blocks.extend([
+            "",
+            "**Test Scenarios**",
+        ])
+        GroundTruthEngine._add_bullet_list(blocks, output.executable_spec.test_scenarios)
+        blocks.extend([
+            "",
+            "**Non-Functional Requirements**",
+        ])
+        GroundTruthEngine._add_bullet_list(blocks, output.executable_spec.non_functional_requirements)
+
+        blocks.extend([
+            "",
+            "## 3. High-Level Design",
+            "**Architecture Overview**",
+            output.high_level_design.architecture_overview,
+            "",
+            "**Components**",
+        ])
+        GroundTruthEngine._add_bullet_list(blocks, output.high_level_design.components)
+        blocks.extend([
+            "",
+            "**Interfaces**",
+        ])
+        GroundTruthEngine._add_bullet_list(blocks, output.high_level_design.interfaces)
+        blocks.extend([
+            "",
+            "**Data Flow**",
+        ])
+        GroundTruthEngine._add_bullet_list(blocks, output.high_level_design.data_flow)
+        blocks.extend([
+            "",
+            "**Observability**",
+        ])
+        GroundTruthEngine._add_bullet_list(blocks, output.high_level_design.observability)
+
+        blocks.extend([
+            "",
+            "## 4. Product Requirements Document (PRD)",
+            "**Objective**",
+            output.prd.objective,
+            "",
+            "**Success Metrics**",
+        ])
+        GroundTruthEngine._add_bullet_list(blocks, output.prd.success_metrics)
+        blocks.extend([
+            "",
+            "**In Scope**",
+        ])
+        GroundTruthEngine._add_bullet_list(blocks, output.prd.scope_in)
+        blocks.extend([
+            "",
+            "**Out of Scope**",
+        ])
+        GroundTruthEngine._add_bullet_list(blocks, output.prd.scope_out)
+        blocks.extend([
+            "",
+            "**Rollout Notes**",
+        ])
+        GroundTruthEngine._add_bullet_list(blocks, output.prd.rollout_notes)
+        blocks.extend([
+            "",
+            "**Open Questions**",
+        ])
+        GroundTruthEngine._add_bullet_list(blocks, output.prd.open_questions)
+
         return "\n".join(blocks)
