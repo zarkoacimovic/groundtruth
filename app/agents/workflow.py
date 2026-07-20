@@ -26,7 +26,7 @@ from app.utils.config import get_model_name
 
 try:
     from langfuse.callback import CallbackHandler
-except Exception:  # pragma: no cover - optional dependency path
+except Exception:
     CallbackHandler = None
 
 
@@ -119,11 +119,11 @@ class GroundTruthEngine:
             config={"callbacks": self.callbacks, "run_name": "groundtruth_pipeline"},
         )
         return GroundTruthOutput(
-            intake=submission,
-            insight=result["insight"],
-            executable_spec=result["executable_spec"],
-            high_level_design=result["high_level_design"],
-            prd=result["prd"],
+            intake=submission.model_dump(),
+            insight=result["insight"].model_dump(),
+            executable_spec=result["executable_spec"].model_dump(),
+            high_level_design=result["high_level_design"].model_dump(),
+            prd=result["prd"].model_dump(),
         )
 
     @staticmethod
