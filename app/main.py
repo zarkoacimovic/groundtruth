@@ -25,12 +25,21 @@ def provider_configured() -> bool:
     return bool(os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY"))
 
 
+def result_state_key(intake_type: IntakeType) -> str:
+    return f"result_{intake_type.value}"
+
+
+def markdown_state_key(intake_type: IntakeType) -> str:
+    return f"markdown_{intake_type.value}"
+
+
 def render_form(label: str, intake_type: IntakeType, placeholder: str):
     with st.form(key=f"form_{intake_type.value}"):
         text = st.text_area(
             label,
             height=220,
             placeholder=placeholder,
+            key=f"text_{intake_type.value}",
         )
         submitted = st.form_submit_button("Generate artifacts")
 
@@ -46,15 +55,16 @@ def render_form(label: str, intake_type: IntakeType, placeholder: str):
             result = engine.run(
                 IntakeSubmission(intake_type=intake_type, raw_text=text.strip())
             )
-            st.session_state["last_markdown"] = engine.to_markdown(result)
-            st.session_state["last_result"] = result
+            st.session_state[markdown_state_key(intake_type)] = engine.to_markdown(result)
+            st.session_state[result_state_key(intake_type)] = result
             st.success("Artifacts generated.")
 
-    if st.session_state.get("last_result"):
-        show_output(st.session_state["last_result"])
+    saved_result = st.session_state.get(result_state_key(intake_type))
+    if saved_result:
+        show_output(saved_result, intake_type)
 
 
-def show_output(result):
+def show_output(result, intake_type: IntakeType):
     st.subheader(result.insight.title)
 
     col1, col2, col3 = st.columns(3)
@@ -73,9 +83,10 @@ def show_output(result):
 
     st.download_button(
         "Download markdown",
-        st.session_state.get("last_markdown", ""),
-        file_name="groundtruth_output.md",
+        st.session_state.get(markdown_state_key(intake_type), ""),
+        file_name=f"groundtruth_{intake_type.value}.md",
         mime="text/markdown",
+        key=f"download_{intake_type.value}",
     )
 
 
@@ -98,10 +109,9 @@ def home():
         "A simple PM intake-to-artifacts MVP. Paste raw product text into one of four forms and generate grounded outputs: executable specifications, high-level design, and PRD."
     )
 
-    if "last_result" not in st.session_state:
-        st.session_state["last_result"] = None
-    if "last_markdown" not in st.session_state:
-        st.session_state["last_markdown"] = ""
+    for intake_type in IntakeType:
+        st.session_state.setdefault(result_state_key(intake_type), None)
+        st.session_state.setdefault(markdown_state_key(intake_type), "")
 
     if not provider_configured():
         st.info("UI is running, but generation requires a Gemini API key in the environment.")
