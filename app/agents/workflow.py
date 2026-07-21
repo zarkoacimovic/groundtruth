@@ -31,16 +31,6 @@ class GroundTruthState(TypedDict, total=False):
 
 
 class GroundTruthEngine:
-    """
-    Orchestrates the GroundTruth workflow using LangGraph + LangChain.
-
-    Key fix in this version:
-    - Langfuse session/user identifiers are no longer hard-coded.
-    - `langfuse_session_id` and `langfuse_user_id` are passed dynamically via
-      LangChain/LangGraph invocation metadata, which is the recommended pattern
-      for Langfuse v3.
-    """
-
     def __init__(self) -> None:
         model_name = os.getenv("GROUNDTRUTH_MODEL", "gemini-3.5-flash")
         temperature = float(os.getenv("GROUNDTRUTH_TEMPERATURE", "0.2"))
@@ -51,22 +41,21 @@ class GroundTruthEngine:
             google_api_key=os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY"),
         )
 
-        graph = StateGraph(GroundTruthState)
-        graph.add_node("insight", self._create_insight)
-        graph.add_node("spec", self._create_spec)
-        graph.add_node("hld", self._create_hld)
-        graph.add_node("prd", self._create_prd)
+        workflow = StateGraph(GroundTruthState)
+        workflow.add_node("insight", self._create_insight)
+        workflow.add_node("spec", self._create_spec)
+        workflow.add_node("hld", self._create_hld)
+        workflow.add_node("prd", self._create_prd)
 
-        graph.add_edge(START, "insight")
-        graph.add_edge("insight", "spec")
-        graph.add_edge("spec", "hld")
-        graph.add_edge("hld", "prd")
-        graph.add_edge("prd", END)
+        workflow.add_edge(START, "insight")
+        workflow.add_edge("insight", "spec")
+        workflow.add_edge("spec", "hld")
+        workflow.add_edge("hld", "prd")
+        workflow.add_edge("prd", END)
 
-        compiled = graph.compile().with_config({"run_name": "groundtruth_pipeline"})
+        compiled = workflow.compile().with_config({"run_name": "groundtruth_pipeline"})
 
-        # RunnablePassthrough helps preserve metadata/callback propagation in LangGraph
-        # when attaching Langfuse tracing attributes at invoke time.
+        # Wrapper used so invoke-time config/metadata propagates cleanly.
         self.app = RunnablePassthrough() | compiled
 
     def _langfuse_callbacks(self) -> List[Any]:
@@ -86,67 +75,7 @@ class GroundTruthEngine:
         ]
 
     def _submission_to_text(self, submission: IntakeSubmission) -> str:
-        if hasattr(submission, "model_dump_json"):
-            return submission.model_dump_json(indent=2)
-        return str(submission)
-
-    def _derive_user_id(
-        self,
-        submission: IntakeSubmission,
-        explicit_user_id: Optional[str] = None,
-    ) -> str:
-        if explicit_user_id:
-            return explicit_user_id
-
-        candidate_fields = [
-            "user_id",
-            "requested_by",
-            "requester",
-            "requester_email",
-            "reporter",
-            "reporter_email",
-            "email",
-            "customer_email",
-            "account_id",
-            "account_name",
-            "customer_name",
-            "company",
-        ]
-
-        for field_name in candidate_fields:
-            value = getattr(submission, field_name, None)
-            if value:
-                return str(value)
-
-        env_default = os.getenv("GROUNDTRUTH_DEFAULT_USER_ID")
-        if env_default:
-            return env_default
-
-        return "anonymous-user"
-
-    def _derive_session_id(
-        self,
-        submission: IntakeSubmission,
-        explicit_session_id: Optional[str] = None,
-    ) -> str:
-        if explicit_session_id:
-            return explicit_session_id
-
-        candidate_fields = [
-            "session_id",
-            "trace_id",
-            "request_id",
-            "submission_id",
-            "id",
-        ]
-
-        for field_name in candidate_fields:
-            value = getattr(submission, field_name, None)
-            if value:
-                return str(value)
-
-        intake_type = getattr(submission, "intake_type", "submission")
-        return f"groundtruth-{intake_type}-{uuid4().hex[:12]}"
+        return submission.model_dump_json(indent=2)
 
     def _build_invoke_config(
         self,
@@ -155,18 +84,15 @@ class GroundTruthEngine:
         user_id: Optional[str] = None,
         tags: Optional[List[str]] = None,
     ) -> RunnableConfig:
-        effective_session_id = self._derive_session_id(submission, session_id)
-        effective_user_id = self._derive_user_id(submission, user_id)
+        effective_session_id = session_id or f"groundtruth-{submission.intake_type}-{uuid4().hex[:12]}"
+        effective_user_id = user_id or submission.requested_by or "anonymous-user"
 
         metadata: Dict[str, Any] = {
             "langfuse_session_id": effective_session_id,
             "langfuse_user_id": effective_user_id,
-            "intake_type": str(getattr(submission, "intake_type", "unknown")),
+            "intake_type": str(submission.intake_type),
+            "submission_title": submission.title,
         }
-
-        title = getattr(submission, "title", None)
-        if title:
-            metadata["submission_title"] = str(title)
 
         if tags:
             metadata["langfuse_tags"] = tags
@@ -249,17 +175,16 @@ class GroundTruthEngine:
         user_id: Optional[str] = None,
         tags: Optional[List[str]] = None,
     ) -> GroundTruthOutput:
-        invoke_config = self._build_invoke_config(
-            submission=submission,
-            session_id=session_id,
-            user_id=user_id,
-            tags=tags,
+        state = self.app.invoke(
+            {"submission": submission},
+            config=self._build_invoke_config(
+                submission=submission,
+                session_id=session_id,
+                user_id=user_id,
+                tags=tags,
+            ),
         )
 
-        state = self.app.invoke({"submission": submission}, config=invoke_config)
-
-        # Convert to plain dicts before rebuilding Pydantic output object.
-        # This avoids model-instance mismatch problems across reload boundaries.
         return GroundTruthOutput(
             submission=state["submission"].model_dump(),
             insight=state["insight"].model_dump(),
