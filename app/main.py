@@ -116,13 +116,27 @@ def build_submission(
     problem_statement: str,
     desired_outcome: str,
 ) -> IntakeSubmission:
+    clean_title = title.strip()
+    clean_requested_by = requested_by.strip() or "Anonymous User"
+    clean_business_context = business_context.strip()
+    clean_problem_statement = problem_statement.strip()
+    clean_desired_outcome = desired_outcome.strip()
+
+    raw_text = f"""Title: {clean_title}
+Requested by: {clean_requested_by}
+Intake type: {intake_type}
+Business context: {clean_business_context}
+Problem statement: {clean_problem_statement}
+Desired outcome: {clean_desired_outcome}"""
+
     return IntakeSubmission(
         intake_type=intake_type,
-        title=title.strip(),
-        requested_by=requested_by.strip() or "Anonymous User",
-        business_context=business_context.strip(),
-        problem_statement=problem_statement.strip(),
-        desired_outcome=desired_outcome.strip(),
+        title=clean_title,
+        requested_by=clean_requested_by,
+        business_context=clean_business_context,
+        problem_statement=clean_problem_statement,
+        desired_outcome=clean_desired_outcome,
+        raw_text=raw_text,
     )
 
 
