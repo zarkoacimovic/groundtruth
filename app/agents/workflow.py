@@ -54,8 +54,6 @@ class GroundTruthEngine:
         workflow.add_edge("prd", END)
 
         compiled = workflow.compile().with_config({"run_name": "groundtruth_pipeline"})
-
-        # Wrapper used so invoke-time config/metadata propagates cleanly.
         self.app = RunnablePassthrough() | compiled
 
     def _langfuse_callbacks(self) -> List[Any]:
@@ -74,8 +72,31 @@ class GroundTruthEngine:
             )
         ]
 
+    def _submission_data(self, submission: IntakeSubmission) -> Dict[str, Any]:
+        if hasattr(submission, "model_dump"):
+            return submission.model_dump()
+        if isinstance(submission, dict):
+            return submission
+        return {}
+
+    def _field(self, submission: IntakeSubmission, name: str, default: str = "") -> str:
+        try:
+            value = getattr(submission, name)
+            if value is not None:
+                return str(value)
+        except AttributeError:
+            pass
+
+        data = self._submission_data(submission)
+        value = data.get(name, default)
+        if value is None:
+            return default
+        return str(value)
+
     def _submission_to_text(self, submission: IntakeSubmission) -> str:
-        return submission.model_dump_json(indent=2)
+        if hasattr(submission, "model_dump_json"):
+            return submission.model_dump_json(indent=2)
+        return str(submission)
 
     def _build_invoke_config(
         self,
@@ -84,14 +105,18 @@ class GroundTruthEngine:
         user_id: Optional[str] = None,
         tags: Optional[List[str]] = None,
     ) -> RunnableConfig:
-        effective_session_id = session_id or f"groundtruth-{submission.intake_type}-{uuid4().hex[:12]}"
-        effective_user_id = user_id or submission.requested_by or "anonymous-user"
+        intake_type = self._field(submission, "intake_type", "unknown")
+        requested_by = self._field(submission, "requested_by", "anonymous-user")
+        title = self._field(submission, "title", "untitled-submission")
+
+        effective_session_id = session_id or f"groundtruth-{intake_type}-{uuid4().hex[:12]}"
+        effective_user_id = user_id or requested_by or "anonymous-user"
 
         metadata: Dict[str, Any] = {
             "langfuse_session_id": effective_session_id,
             "langfuse_user_id": effective_user_id,
-            "intake_type": str(submission.intake_type),
-            "submission_title": submission.title,
+            "intake_type": intake_type,
+            "submission_title": title,
         }
 
         if tags:
