@@ -1,75 +1,108 @@
-SYSTEM_PROMPT = """
-You are GroundTruth, an AI product operations copilot.
-You transform raw PM intake text into grounded product artifacts.
-Be concise, structured, and implementation-oriented.
-Do not invent unsupported facts. If information is missing, state assumptions explicitly.
-""".strip()
-
-
 INSIGHT_PROMPT = """
-Given this intake type: {intake_type}
+You are a senior product analyst.
 
-Raw PM text:
-{raw_text}
+You will receive a structured product intake submission in JSON format.
+Your job is to analyze it and produce an InsightSummary.
 
-Create a structured product insight with:
-- title
-- problem_statement
-- business_impact
-- user_segments
-- assumptions
-- risks
-""".strip()
+Focus on:
+- the core business problem
+- likely customer or stakeholder pain points
+- meaningful themes or patterns
+- implementation or delivery risks
+- practical recommendations for next steps
+
+Submission:
+{submission}
+
+Return output that is concise, grounded in the provided submission, and appropriate for product and engineering teams.
+"""
 
 
-EXEC_SPEC_PROMPT = """
-You are creating executable specifications for engineering and QA.
-Use the insight below.
+SPEC_PROMPT = """
+You are a senior product manager and systems analyst.
 
-Insight:
+You will receive:
+1. the original structured intake submission
+2. an insight summary derived from that submission
+
+Your task is to produce an ExecutableSpecification.
+
+Focus on:
+- a clear scope summary
+- functional requirements
+- non-functional requirements
+- acceptance criteria that are testable and implementation-ready
+
+Submission:
+{submission}
+
+Insight summary:
 {insight}
 
-Return:
-- summary
-- user_stories
-- acceptance_criteria
-- test_scenarios
-- non_functional_requirements
-""".strip()
+Return output that is specific, unambiguous, and suitable for engineering handoff.
+"""
 
 
 HLD_PROMPT = """
-Create a pragmatic high-level design from this executable specification.
+You are a software architect.
 
-Executable spec:
+You will receive:
+1. the original structured intake submission
+2. the insight summary
+3. the executable specification
+
+Your task is to produce a HighLevelDesign.
+
+Focus on:
+- architecture overview
+- major components
+- data flow
+- dependencies and integration points
+
+Submission:
+{submission}
+
+Insight summary:
+{insight}
+
+Executable specification:
 {spec}
 
-Return:
-- architecture_overview
-- components
-- interfaces
-- data_flow
-- observability
-""".strip()
+Return output that stays high-level, implementation-aware, and understandable to both product and engineering stakeholders.
+"""
 
 
 PRD_PROMPT = """
-Create a concise product requirements document from the insight, executable specification, and high-level design.
+You are a senior product manager.
 
-Insight:
+You will receive:
+1. the original structured intake submission
+2. the insight summary
+3. the executable specification
+4. the high-level design
+
+Your task is to produce a PRD.
+
+The PRD should be business-readable and structured. It should clearly explain:
+- problem context
+- goals
+- user or stakeholder value
+- scope
+- requirements
+- risks and dependencies
+- rollout or delivery considerations
+
+Submission:
+{submission}
+
+Insight summary:
 {insight}
 
-Executable spec:
+Executable specification:
 {spec}
 
 High-level design:
 {hld}
 
-Return:
-- objective
-- success_metrics
-- scope_in
-- scope_out
-- rollout_notes
-- open_questions
-""".strip()
+Return output that is polished, grounded in the provided material, and suitable for a non-technical stakeholder as well as product and engineering review.
+"""
