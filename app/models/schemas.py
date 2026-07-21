@@ -1,61 +1,71 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
-from enum import Enum
-from typing import List
+from typing import List, Literal
 
 from pydantic import BaseModel, Field
 
 
-class IntakeType(str, Enum):
-    SERVICE_REQUEST = "service_request"
-    CUSTOMER_BUG = "customer_bug"
-    FEATURE_REQUEST = "feature_request"
-    COMPETITOR_INSIGHT = "competitor_insight"
+IntakeType = Literal[
+    "service_request",
+    "customer_bug",
+    "feature_request",
+    "competitor_insight",
+]
 
 
 class IntakeSubmission(BaseModel):
+    """
+    Normalized intake payload used by the GroundTruth MVP.
+
+    This schema is intentionally forgiving and aligned with app/main.py and
+    app/agents/workflow.py. It supports the four MVP intake types and includes
+    both structured fields and a raw_text field for prompt grounding,
+    observability, and debugging.
+    """
+
     intake_type: IntakeType
-    raw_text: str = Field(..., min_length=10)
-    submitted_at: str = Field(default_factory=lambda: datetime.now(UTC).isoformat())
+    raw_text: str
+
+    title: str = ""
+    requested_by: str = "Anonymous User"
+    business_context: str = ""
+    problem_statement: str = ""
+    desired_outcome: str = ""
 
 
 class InsightSummary(BaseModel):
-    title: str
-    problem_statement: str
-    business_impact: str
-    user_segments: List[str] = Field(default_factory=list)
-    assumptions: List[str] = Field(default_factory=list)
+    summary: str = ""
+    key_themes: List[str] = Field(default_factory=list)
     risks: List[str] = Field(default_factory=list)
+    recommendations: List[str] = Field(default_factory=list)
 
 
 class ExecutableSpecification(BaseModel):
-    summary: str
-    user_stories: List[str]
-    acceptance_criteria: List[str]
-    test_scenarios: List[str]
-    non_functional_requirements: List[str]
+    summary: str = ""
+    functional_requirements: List[str] = Field(default_factory=list)
+    non_functional_requirements: List[str] = Field(default_factory=list)
+    acceptance_criteria: List[str] = Field(default_factory=list)
 
 
 class HighLevelDesign(BaseModel):
-    architecture_overview: str
-    components: List[str]
-    interfaces: List[str]
-    data_flow: List[str]
-    observability: List[str]
+    overview: str = ""
+    components: List[str] = Field(default_factory=list)
+    data_flow: List[str] = Field(default_factory=list)
+    dependencies: List[str] = Field(default_factory=list)
+
+
+class PRDSection(BaseModel):
+    title: str = ""
+    content: str = ""
 
 
 class PRD(BaseModel):
-    objective: str
-    success_metrics: List[str]
-    scope_in: List[str]
-    scope_out: List[str]
-    rollout_notes: List[str]
-    open_questions: List[str]
+    summary: str = ""
+    sections: List[PRDSection] = Field(default_factory=list)
 
 
 class GroundTruthOutput(BaseModel):
-    intake: IntakeSubmission
+    submission: IntakeSubmission
     insight: InsightSummary
     executable_spec: ExecutableSpecification
     high_level_design: HighLevelDesign
