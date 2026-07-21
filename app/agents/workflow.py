@@ -59,18 +59,11 @@ class GroundTruthEngine:
     def _langfuse_callbacks(self) -> List[Any]:
         public_key = os.getenv("LANGFUSE_PUBLIC_KEY")
         secret_key = os.getenv("LANGFUSE_SECRET_KEY")
-        base_url = os.getenv("LANGFUSE_BASE_URL")
 
         if not public_key or not secret_key:
             return []
 
-        return [
-            LangfuseCallbackHandler(
-                public_key=public_key,
-                secret_key=secret_key,
-                host=base_url,
-            )
-        ]
+        return [LangfuseCallbackHandler()]
 
     def _submission_data(self, submission: IntakeSubmission) -> Dict[str, Any]:
         if hasattr(submission, "model_dump"):
