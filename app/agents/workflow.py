@@ -1,11 +1,14 @@
 from __future__ import annotations
 
-import json
 import os
-from typing import Any, Dict, TypedDict
+from typing import Any, Dict, List, Optional, TypedDict
+from uuid import uuid4
 
-from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.runnables import RunnablePassthrough
+from langchain_core.runnables.config import RunnableConfig
 from langchain_google_genai import ChatGoogleGenerativeAI
+from langfuse.langchain import CallbackHandler as LangfuseCallbackHandler
 from langgraph.graph import END, START, StateGraph
 
 from app.models.schemas import (
@@ -16,22 +19,7 @@ from app.models.schemas import (
     IntakeSubmission,
     PRD,
 )
-from app.prompts.templates import (
-    EXEC_SPEC_PROMPT,
-    HLD_PROMPT,
-    INSIGHT_PROMPT,
-    PRD_PROMPT,
-    SYSTEM_PROMPT,
-)
-from app.utils.config import get_model_name
-
-try:
-    from langfuse import Langfuse, get_client
-    from langfuse.langchain import CallbackHandler
-except Exception:  # pragma: no cover
-    Langfuse = None
-    get_client = None
-    CallbackHandler = None
+from app.prompts.templates import HLD_PROMPT, INSIGHT_PROMPT, PRD_PROMPT, SPEC_PROMPT
 
 
 class GroundTruthState(TypedDict, total=False):
@@ -42,53 +30,27 @@ class GroundTruthState(TypedDict, total=False):
     prd: PRD
 
 
-def _langfuse_callbacks() -> list:
-    if CallbackHandler is None or Langfuse is None:
-        return []
-
-    public_key = os.getenv("LANGFUSE_PUBLIC_KEY")
-    secret_key = os.getenv("LANGFUSE_SECRET_KEY")
-    host = os.getenv("LANGFUSE_BASE_URL", "https://us.cloud.langfuse.com")
-
-    if not public_key or not secret_key:
-        return []
-
-    try:
-        Langfuse(
-            public_key=public_key,
-            secret_key=secret_key,
-            host=host,
-        )
-        get_client()
-        return [CallbackHandler()]
-    except Exception:
-        return []
-
-
 class GroundTruthEngine:
+    """
+    Orchestrates the GroundTruth workflow using LangGraph + LangChain.
+
+    Key fix in this version:
+    - Langfuse session/user identifiers are no longer hard-coded.
+    - `langfuse_session_id` and `langfuse_user_id` are passed dynamically via
+      LangChain/LangGraph invocation metadata, which is the recommended pattern
+      for Langfuse v3.
+    """
+
     def __init__(self) -> None:
-        self.model = ChatGoogleGenerativeAI(
-            model=get_model_name(),
-            temperature=0.2,
-        )
-        self.callbacks = _langfuse_callbacks()
-        self.graph = self._build_graph()
+        model_name = os.getenv("GROUNDTRUTH_MODEL", "gemini-3.5-flash")
+        temperature = float(os.getenv("GROUNDTRUTH_TEMPERATURE", "0.2"))
 
-    def _invoke_structured(self, schema: Any, prompt: str) -> Any:
-        chain = self.model.with_structured_output(schema)
-        return chain.invoke(
-            [SystemMessage(content=SYSTEM_PROMPT), HumanMessage(content=prompt)],
-            config={
-                "callbacks": self.callbacks,
-                "metadata": {
-                    "app": "groundtruth-mvp",
-                    "langfuse_session_id": "groundtruth-session",
-                },
-                "tags": ["groundtruth", schema.__name__.lower()],
-            },
+        self.llm = ChatGoogleGenerativeAI(
+            model=model_name,
+            temperature=temperature,
+            google_api_key=os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY"),
         )
 
-    def _build_graph(self):
         graph = StateGraph(GroundTruthState)
         graph.add_node("insight", self._create_insight)
         graph.add_node("spec", self._create_spec)
@@ -100,179 +62,282 @@ class GroundTruthEngine:
         graph.add_edge("spec", "hld")
         graph.add_edge("hld", "prd")
         graph.add_edge("prd", END)
-        return graph.compile()
 
-    def _create_insight(self, state: GroundTruthState) -> Dict[str, Any]:
-        submission = state["submission"]
-        prompt = INSIGHT_PROMPT.format(
-            intake_type=submission.intake_type.value,
-            raw_text=submission.raw_text,
-        )
-        insight = self._invoke_structured(InsightSummary, prompt)
-        return {"insight": insight}
+        compiled = graph.compile().with_config({"run_name": "groundtruth_pipeline"})
 
-    def _create_spec(self, state: GroundTruthState) -> Dict[str, Any]:
-        prompt = EXEC_SPEC_PROMPT.format(
-            insight=state["insight"].model_dump_json(indent=2),
-        )
-        spec = self._invoke_structured(ExecutableSpecification, prompt)
-        return {"executable_spec": spec}
+        # RunnablePassthrough helps preserve metadata/callback propagation in LangGraph
+        # when attaching Langfuse tracing attributes at invoke time.
+        self.app = RunnablePassthrough() | compiled
 
-    def _create_hld(self, state: GroundTruthState) -> Dict[str, Any]:
-        prompt = HLD_PROMPT.format(
-            spec=state["executable_spec"].model_dump_json(indent=2),
-        )
-        hld = self._invoke_structured(HighLevelDesign, prompt)
-        return {"high_level_design": hld}
+    def _langfuse_callbacks(self) -> List[Any]:
+        public_key = os.getenv("LANGFUSE_PUBLIC_KEY")
+        secret_key = os.getenv("LANGFUSE_SECRET_KEY")
+        base_url = os.getenv("LANGFUSE_BASE_URL")
 
-    def _create_prd(self, state: GroundTruthState) -> Dict[str, Any]:
-        prompt = PRD_PROMPT.format(
-            insight=state["insight"].model_dump_json(indent=2),
-            spec=state["executable_spec"].model_dump_json(indent=2),
-            hld=state["high_level_design"].model_dump_json(indent=2),
-        )
-        prd = self._invoke_structured(PRD, prompt)
-        return {"prd": prd}
+        if not public_key or not secret_key:
+            return []
 
-    def run(self, submission: IntakeSubmission) -> GroundTruthOutput:
-        result = self.graph.invoke(
-            {"submission": submission},
-            config={
-                "callbacks": self.callbacks,
-                "run_name": "groundtruth_pipeline",
-                "metadata": {
-                    "langfuse_session_id": "groundtruth-session",
-                    "langfuse_user_id": "pm-demo-user",
-                },
-            },
-        )
-        return GroundTruthOutput(
-            intake=submission.model_dump(),
-            insight=result["insight"].model_dump(),
-            executable_spec=result["executable_spec"].model_dump(),
-            high_level_design=result["high_level_design"].model_dump(),
-            prd=result["prd"].model_dump(),
-        )
-
-    @staticmethod
-    def _add_bullet_list(blocks: list[str], items: list[str]) -> None:
-        if not items:
-            blocks.append("- None provided")
-            return
-        for item in items:
-            blocks.append(f"- {item}")
-
-    @staticmethod
-    def to_markdown(output: GroundTruthOutput) -> str:
-        blocks = [
-            f"# GroundTruth Output: {output.insight.title}",
-            "",
-            "## Intake",
-            f"- **Type:** {output.intake.intake_type.value.replace('_', ' ').title()}",
-            f"- **Submitted at:** {output.intake.submitted_at}",
-            "",
-            "## 1. Insight Summary",
-            f"**Title:** {output.insight.title}",
-            "",
-            "**Problem Statement**",
-            output.insight.problem_statement,
-            "",
-            "**Business Impact**",
-            output.insight.business_impact,
-            "",
-            "**User Segments**",
+        return [
+            LangfuseCallbackHandler(
+                public_key=public_key,
+                secret_key=secret_key,
+                host=base_url,
+            )
         ]
 
-        GroundTruthEngine._add_bullet_list(blocks, output.insight.user_segments)
-        blocks.extend([
-            "",
-            "**Assumptions**",
-        ])
-        GroundTruthEngine._add_bullet_list(blocks, output.insight.assumptions)
-        blocks.extend([
-            "",
-            "**Risks**",
-        ])
-        GroundTruthEngine._add_bullet_list(blocks, output.insight.risks)
+    def _submission_to_text(self, submission: IntakeSubmission) -> str:
+        if hasattr(submission, "model_dump_json"):
+            return submission.model_dump_json(indent=2)
+        return str(submission)
 
-        blocks.extend([
-            "",
-            "## 2. Executable Specification",
-            "**Summary**",
-            output.executable_spec.summary,
-            "",
-            "**User Stories**",
-        ])
-        GroundTruthEngine._add_bullet_list(blocks, output.executable_spec.user_stories)
-        blocks.extend([
-            "",
-            "**Acceptance Criteria**",
-        ])
-        GroundTruthEngine._add_bullet_list(blocks, output.executable_spec.acceptance_criteria)
-        blocks.extend([
-            "",
-            "**Test Scenarios**",
-        ])
-        GroundTruthEngine._add_bullet_list(blocks, output.executable_spec.test_scenarios)
-        blocks.extend([
-            "",
-            "**Non-Functional Requirements**",
-        ])
-        GroundTruthEngine._add_bullet_list(blocks, output.executable_spec.non_functional_requirements)
+    def _derive_user_id(
+        self,
+        submission: IntakeSubmission,
+        explicit_user_id: Optional[str] = None,
+    ) -> str:
+        if explicit_user_id:
+            return explicit_user_id
 
-        blocks.extend([
-            "",
-            "## 3. High-Level Design",
-            "**Architecture Overview**",
-            output.high_level_design.architecture_overview,
-            "",
-            "**Components**",
-        ])
-        GroundTruthEngine._add_bullet_list(blocks, output.high_level_design.components)
-        blocks.extend([
-            "",
-            "**Interfaces**",
-        ])
-        GroundTruthEngine._add_bullet_list(blocks, output.high_level_design.interfaces)
-        blocks.extend([
-            "",
-            "**Data Flow**",
-        ])
-        GroundTruthEngine._add_bullet_list(blocks, output.high_level_design.data_flow)
-        blocks.extend([
-            "",
-            "**Observability**",
-        ])
-        GroundTruthEngine._add_bullet_list(blocks, output.high_level_design.observability)
+        candidate_fields = [
+            "user_id",
+            "requested_by",
+            "requester",
+            "requester_email",
+            "reporter",
+            "reporter_email",
+            "email",
+            "customer_email",
+            "account_id",
+            "account_name",
+            "customer_name",
+            "company",
+        ]
 
-        blocks.extend([
-            "",
-            "## 4. Product Requirements Document (PRD)",
-            "**Objective**",
-            output.prd.objective,
-            "",
-            "**Success Metrics**",
-        ])
-        GroundTruthEngine._add_bullet_list(blocks, output.prd.success_metrics)
-        blocks.extend([
-            "",
-            "**In Scope**",
-        ])
-        GroundTruthEngine._add_bullet_list(blocks, output.prd.scope_in)
-        blocks.extend([
-            "",
-            "**Out of Scope**",
-        ])
-        GroundTruthEngine._add_bullet_list(blocks, output.prd.scope_out)
-        blocks.extend([
-            "",
-            "**Rollout Notes**",
-        ])
-        GroundTruthEngine._add_bullet_list(blocks, output.prd.rollout_notes)
-        blocks.extend([
-            "",
-            "**Open Questions**",
-        ])
-        GroundTruthEngine._add_bullet_list(blocks, output.prd.open_questions)
+        for field_name in candidate_fields:
+            value = getattr(submission, field_name, None)
+            if value:
+                return str(value)
 
-        return "\n".join(blocks)
+        env_default = os.getenv("GROUNDTRUTH_DEFAULT_USER_ID")
+        if env_default:
+            return env_default
+
+        return "anonymous-user"
+
+    def _derive_session_id(
+        self,
+        submission: IntakeSubmission,
+        explicit_session_id: Optional[str] = None,
+    ) -> str:
+        if explicit_session_id:
+            return explicit_session_id
+
+        candidate_fields = [
+            "session_id",
+            "trace_id",
+            "request_id",
+            "submission_id",
+            "id",
+        ]
+
+        for field_name in candidate_fields:
+            value = getattr(submission, field_name, None)
+            if value:
+                return str(value)
+
+        intake_type = getattr(submission, "intake_type", "submission")
+        return f"groundtruth-{intake_type}-{uuid4().hex[:12]}"
+
+    def _build_invoke_config(
+        self,
+        submission: IntakeSubmission,
+        session_id: Optional[str] = None,
+        user_id: Optional[str] = None,
+        tags: Optional[List[str]] = None,
+    ) -> RunnableConfig:
+        effective_session_id = self._derive_session_id(submission, session_id)
+        effective_user_id = self._derive_user_id(submission, user_id)
+
+        metadata: Dict[str, Any] = {
+            "langfuse_session_id": effective_session_id,
+            "langfuse_user_id": effective_user_id,
+            "intake_type": str(getattr(submission, "intake_type", "unknown")),
+        }
+
+        title = getattr(submission, "title", None)
+        if title:
+            metadata["submission_title"] = str(title)
+
+        if tags:
+            metadata["langfuse_tags"] = tags
+
+        return {
+            "callbacks": self._langfuse_callbacks(),
+            "metadata": metadata,
+            "run_name": "groundtruth_pipeline",
+        }
+
+    def _create_insight(
+        self,
+        state: GroundTruthState,
+        config: Optional[RunnableConfig] = None,
+    ) -> Dict[str, InsightSummary]:
+        prompt = ChatPromptTemplate.from_template(INSIGHT_PROMPT)
+        chain = prompt | self.llm.with_structured_output(InsightSummary)
+        result = chain.invoke(
+            {"submission": self._submission_to_text(state["submission"])},
+            config=config,
+        )
+        return {"insight": result}
+
+    def _create_spec(
+        self,
+        state: GroundTruthState,
+        config: Optional[RunnableConfig] = None,
+    ) -> Dict[str, ExecutableSpecification]:
+        prompt = ChatPromptTemplate.from_template(SPEC_PROMPT)
+        chain = prompt | self.llm.with_structured_output(ExecutableSpecification)
+        result = chain.invoke(
+            {
+                "submission": self._submission_to_text(state["submission"]),
+                "insight": state["insight"].model_dump_json(indent=2),
+            },
+            config=config,
+        )
+        return {"executable_spec": result}
+
+    def _create_hld(
+        self,
+        state: GroundTruthState,
+        config: Optional[RunnableConfig] = None,
+    ) -> Dict[str, HighLevelDesign]:
+        prompt = ChatPromptTemplate.from_template(HLD_PROMPT)
+        chain = prompt | self.llm.with_structured_output(HighLevelDesign)
+        result = chain.invoke(
+            {
+                "submission": self._submission_to_text(state["submission"]),
+                "insight": state["insight"].model_dump_json(indent=2),
+                "spec": state["executable_spec"].model_dump_json(indent=2),
+            },
+            config=config,
+        )
+        return {"high_level_design": result}
+
+    def _create_prd(
+        self,
+        state: GroundTruthState,
+        config: Optional[RunnableConfig] = None,
+    ) -> Dict[str, PRD]:
+        prompt = ChatPromptTemplate.from_template(PRD_PROMPT)
+        chain = prompt | self.llm.with_structured_output(PRD)
+        result = chain.invoke(
+            {
+                "submission": self._submission_to_text(state["submission"]),
+                "insight": state["insight"].model_dump_json(indent=2),
+                "spec": state["executable_spec"].model_dump_json(indent=2),
+                "hld": state["high_level_design"].model_dump_json(indent=2),
+            },
+            config=config,
+        )
+        return {"prd": result}
+
+    def run(
+        self,
+        submission: IntakeSubmission,
+        *,
+        session_id: Optional[str] = None,
+        user_id: Optional[str] = None,
+        tags: Optional[List[str]] = None,
+    ) -> GroundTruthOutput:
+        invoke_config = self._build_invoke_config(
+            submission=submission,
+            session_id=session_id,
+            user_id=user_id,
+            tags=tags,
+        )
+
+        state = self.app.invoke({"submission": submission}, config=invoke_config)
+
+        # Convert to plain dicts before rebuilding Pydantic output object.
+        # This avoids model-instance mismatch problems across reload boundaries.
+        return GroundTruthOutput(
+            submission=state["submission"].model_dump(),
+            insight=state["insight"].model_dump(),
+            executable_spec=state["executable_spec"].model_dump(),
+            high_level_design=state["high_level_design"].model_dump(),
+            prd=state["prd"].model_dump(),
+        )
+
+    def to_markdown(self, output: GroundTruthOutput) -> str:
+        submission = output.submission.model_dump()
+        insight = output.insight.model_dump()
+        spec = output.executable_spec.model_dump()
+        hld = output.high_level_design.model_dump()
+        prd = output.prd.model_dump()
+
+        def bullet_list(items: List[str]) -> str:
+            if not items:
+                return "- None"
+            return "\n".join(f"- {item}" for item in items)
+
+        prd_sections = prd.get("sections", [])
+        if prd_sections:
+            prd_text = "\n\n".join(
+                f"### {section.get('title', 'Section')}\n{section.get('content', '').strip()}"
+                for section in prd_sections
+            )
+        else:
+            prd_text = prd.get("summary", "No PRD content generated.")
+
+        return f"""# GroundTruth Service Request
+
+## Intake
+- **Type:** {submission.get('intake_type', 'N/A')}
+- **Title:** {submission.get('title', 'N/A')}
+- **Requested by:** {submission.get('requested_by', 'N/A')}
+- **Business context:** {submission.get('business_context', 'N/A')}
+- **Problem statement:** {submission.get('problem_statement', 'N/A')}
+- **Desired outcome:** {submission.get('desired_outcome', 'N/A')}
+
+## Insight Summary
+**Summary**
+{insight.get('summary', 'N/A')}
+
+**Key themes**
+{bullet_list(insight.get('key_themes', []))}
+
+**Risks**
+{bullet_list(insight.get('risks', []))}
+
+**Recommendations**
+{bullet_list(insight.get('recommendations', []))}
+
+## Executable Specification
+**Overview**
+{spec.get('summary', 'N/A')}
+
+**Functional requirements**
+{bullet_list(spec.get('functional_requirements', []))}
+
+**Non-functional requirements**
+{bullet_list(spec.get('non_functional_requirements', []))}
+
+**Acceptance criteria**
+{bullet_list(spec.get('acceptance_criteria', []))}
+
+## High-Level Design
+**Architecture summary**
+{hld.get('overview', 'N/A')}
+
+**Components**
+{bullet_list(hld.get('components', []))}
+
+**Data flow**
+{bullet_list(hld.get('data_flow', []))}
+
+**Dependencies**
+{bullet_list(hld.get('dependencies', []))}
+
+## Product Requirements Document
+{prd_text}
+"""
