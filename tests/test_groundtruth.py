@@ -8,10 +8,6 @@ from app.prompts.templates import HLD_PROMPT, INSIGHT_PROMPT, PRD_PROMPT, SPEC_P
 from app.agents.workflow import GroundTruthEngine
 
 
-# -----------------------------
-# Fixtures / helpers
-# -----------------------------
-
 @pytest.fixture
 def submission() -> IntakeSubmission:
     return IntakeSubmission(
@@ -33,13 +29,12 @@ def submission() -> IntakeSubmission:
 
 
 @pytest.fixture
-def engine() -> GroundTruthEngine:
+def engine(monkeypatch) -> GroundTruthEngine:
+    # Unit tests should not require a real Gemini key.
+    monkeypatch.setenv("GOOGLE_API_KEY", "test-google-api-key")
+    monkeypatch.setenv("GROUNDTRUTH_MODEL", "gemini-3.5-flash")
     return GroundTruthEngine()
 
-
-# -----------------------------
-# Unit tests
-# -----------------------------
 
 def test_01_intake_submission_accepts_supported_type(submission: IntakeSubmission):
     assert submission.intake_type == "service_request"
@@ -89,7 +84,9 @@ def test_06_submission_to_text_contains_problem_statement(engine: GroundTruthEng
     assert "milestones and blockers" in payload
 
 
-def test_07_markdown_export_contains_expected_sections(submission: IntakeSubmission):
+def test_07_markdown_export_contains_expected_sections(monkeypatch, submission: IntakeSubmission):
+    monkeypatch.setenv("GOOGLE_API_KEY", "test-google-api-key")
+
     from app.models.schemas import (
         ExecutableSpecification,
         GroundTruthOutput,
@@ -128,10 +125,6 @@ def test_08_supported_intake_types_are_limited():
     valid = {"service_request", "customer_bug", "feature_request", "competitor_insight"}
     assert len(valid) == 4
 
-
-# -----------------------------
-# Optional integration tests
-# -----------------------------
 
 @pytest.mark.skipif(not os.getenv("LANGSMITH_API_KEY"), reason="LANGSMITH_API_KEY not configured")
 def test_09_langsmith_client_connectivity():
