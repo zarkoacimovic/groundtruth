@@ -8,6 +8,10 @@ from app.prompts.templates import HLD_PROMPT, INSIGHT_PROMPT, PRD_PROMPT, SPEC_P
 from app.agents.workflow import GroundTruthEngine
 
 
+# ---------------------------------------------------------------------
+# Test data / fixtures
+# ---------------------------------------------------------------------
+
 @pytest.fixture
 def submission() -> IntakeSubmission:
     return IntakeSubmission(
@@ -29,12 +33,36 @@ def submission() -> IntakeSubmission:
 
 
 @pytest.fixture
+def bug_submission() -> IntakeSubmission:
+    return IntakeSubmission(
+        intake_type="customer_bug",
+        title="Save action fails after refresh",
+        requested_by="support-team",
+        business_context="A customer support team is handling repeated complaints from enterprise users.",
+        problem_statement="Users report that edits appear to save, but after a page refresh the changes are lost.",
+        desired_outcome="Identify the likely defect scope and generate a concrete implementation-ready fix plan.",
+        raw_text=(
+            "Title: Save action fails after refresh\n"
+            "Requested by: support-team\n"
+            "Intake type: customer_bug\n"
+            "Business context: A customer support team is handling repeated complaints from enterprise users.\n"
+            "Problem statement: Users report that edits appear to save, but after a page refresh the changes are lost.\n"
+            "Desired outcome: Identify the likely defect scope and generate a concrete implementation-ready fix plan."
+        ),
+    )
+
+
+@pytest.fixture
 def engine(monkeypatch) -> GroundTruthEngine:
-    # Unit tests should not require a real Gemini key.
+    # Fast/local tests should not require a real Gemini key.
     monkeypatch.setenv("GOOGLE_API_KEY", "test-google-api-key")
     monkeypatch.setenv("GROUNDTRUTH_MODEL", "gemini-3.5-flash")
     return GroundTruthEngine()
 
+
+# ---------------------------------------------------------------------
+# Fast structural / wiring tests
+# ---------------------------------------------------------------------
 
 def test_01_intake_submission_accepts_supported_type(submission: IntakeSubmission):
     assert submission.intake_type == "service_request"
@@ -62,11 +90,11 @@ def test_03_langfuse_invoke_config_includes_metadata(engine: GroundTruthEngine, 
 
 
 def test_04_workflow_falls_back_when_optional_fields_missing(engine: GroundTruthEngine):
-    submission = IntakeSubmission(
+    minimal = IntakeSubmission(
         intake_type="customer_bug",
         raw_text="Customer reports save failure after refresh.",
     )
-    cfg = engine._build_invoke_config(submission=submission)
+    cfg = engine._build_invoke_config(submission=minimal)
     assert cfg["metadata"]["intake_type"] == "customer_bug"
     assert cfg["metadata"]["submission_title"] == ""
     assert cfg["metadata"]["langfuse_user_id"] == "Anonymous User"
@@ -121,25 +149,64 @@ def test_07_markdown_export_contains_expected_sections(monkeypatch, submission: 
     assert "## Product Requirements Document" in md
 
 
-def test_08_supported_intake_types_are_limited():
-    valid = {"service_request", "customer_bug", "feature_request", "competitor_insight"}
-    assert len(valid) == 4
+# ---------------------------------------------------------------------
+# Live evaluation tests (real Gemini calls)
+# These tests require GOOGLE_API_KEY and will consume API quota.
+# ---------------------------------------------------------------------
+
+live_eval_required = pytest.mark.skipif(
+    not (os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")),
+    reason="Live Gemini evaluation requires GOOGLE_API_KEY or GEMINI_API_KEY",
+)
 
 
-@pytest.mark.skipif(not os.getenv("LANGSMITH_API_KEY"), reason="LANGSMITH_API_KEY not configured")
-def test_09_langsmith_client_connectivity():
-    from langsmith import Client
+@live_eval_required
+def test_08_live_eval_insight_is_non_empty_and_relevant(submission: IntakeSubmission):
+    engine = GroundTruthEngine()
+    result = engine.run(submission, session_id="live-eval-insight", user_id="qa-live")
 
-    client = Client(api_key=os.getenv("LANGSMITH_API_KEY"))
-    assert client is not None
-    assert hasattr(client, "list_runs") or hasattr(client, "create_run")
+    assert result.insight.summary.strip() != ""
+    assert len(result.insight.key_themes) >= 1
+
+    summary_lower = result.insight.summary.lower()
+    allowed_keywords = [
+        "onboarding",
+        "visibility",
+        "milestones",
+        "blockers",
+        "ownership",
+        "progress",
+    ]
+    assert any(keyword in summary_lower for keyword in allowed_keywords), result.insight.summary
 
 
-@pytest.mark.skipif(not (os.getenv("LANGFUSE_PUBLIC_KEY") and os.getenv("LANGFUSE_SECRET_KEY")), reason="Langfuse keys not configured")
-def test_10_langfuse_api_connectivity():
-    from langfuse import get_client
+@live_eval_required
+def test_09_live_eval_spec_contains_testable_requirements(submission: IntakeSubmission):
+    engine = GroundTruthEngine()
+    result = engine.run(submission, session_id="live-eval-spec", user_id="qa-live")
 
-    client = get_client()
-    assert client is not None
-    assert hasattr(client, "api")
-    assert hasattr(client.api, "observations") or hasattr(client.api, "metrics")
+    assert result.executable_spec.summary.strip() != ""
+    assert len(result.executable_spec.functional_requirements) >= 2
+    assert len(result.executable_spec.acceptance_criteria) >= 1
+
+    combined = " ".join(result.executable_spec.acceptance_criteria).lower()
+    quality_signals = ["shall", "must", "when", "then", "display", "track", "assign"]
+    assert any(signal in combined for signal in quality_signals), result.executable_spec.acceptance_criteria
+
+
+@live_eval_required
+def test_10_live_eval_bug_request_produces_actionable_outputs(bug_submission: IntakeSubmission):
+    engine = GroundTruthEngine()
+    result = engine.run(bug_submission, session_id="live-eval-bug", user_id="qa-live")
+
+    assert result.insight.summary.strip() != ""
+    assert result.high_level_design.overview.strip() != ""
+    assert len(result.prd.sections) >= 1
+
+    joined_content = " ".join(
+        [result.insight.summary, result.high_level_design.overview, result.prd.summary]
+        + [section.title + " " + section.content for section in result.prd.sections]
+    ).lower()
+
+    bug_signals = ["save", "refresh", "data", "persistence", "state", "update", "lost"]
+    assert any(signal in joined_content for signal in bug_signals), joined_content
