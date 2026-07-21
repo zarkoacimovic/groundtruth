@@ -1,7 +1,7 @@
-# .github/workflows/streamlit-app.yml
 name: GroundTruth Tests
 
 on:
+  workflow_dispatch:
   push:
     branches: ["main"]
   pull_request:
@@ -13,6 +13,15 @@ permissions:
 jobs:
   streamlit:
     runs-on: ubuntu-latest
+    env:
+      GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+      LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}
+      LANGFUSE_PUBLIC_KEY: ${{ secrets.LANGFUSE_PUBLIC_KEY }}
+      LANGFUSE_SECRET_KEY: ${{ secrets.LANGFUSE_SECRET_KEY }}
+      LANGFUSE_BASE_URL: ${{ secrets.LANGFUSE_BASE_URL }}
+      GROUNDTRUTH_MODEL: gemini-3.5-flash
+      LANGSMITH_TRACING: "false"
+
     steps:
       - uses: actions/checkout@v4
 
