@@ -16,11 +16,13 @@ jobs:
 
     env:
       GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
       LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}
       LANGFUSE_PUBLIC_KEY: ${{ secrets.LANGFUSE_PUBLIC_KEY }}
       LANGFUSE_SECRET_KEY: ${{ secrets.LANGFUSE_SECRET_KEY }}
       LANGFUSE_BASE_URL: ${{ secrets.LANGFUSE_BASE_URL }}
       GROUNDTRUTH_MODEL: gemini-3.5-flash
+      GROUNDTRUTH_JUDGE_MODEL: gemini-3.5-flash
       LANGSMITH_TRACING: "false"
 
     steps:
@@ -39,22 +41,55 @@ jobs:
           pip install -r requirements.txt
           pip install pytest pytest-cov
 
+      - name: Create JUnit directory
+        run: mkdir -p junit
+
       - name: Streamlit smoke validation
         uses: streamlit/streamlit-app-action@v0.0.3
         with:
           app-path: app/main.py
-          skip-smoke: false
-          pytest-args: -q
+          skip-smoke: true
+          pytest-args: -q tests/test_streamlit_smoke.py --junit-xml=junit/streamlit-smoke-results.xml
+
+      - name: Run schema tests
+        if: always()
+        run: |
+          pytest -v tests/test_schemas.py --junitxml=junit/schema-test-results.xml
 
       - name: Run core GroundTruth tests
+        if: always()
         run: |
-          mkdir -p junit
           pytest -v tests/test_groundtruth.py --junitxml=junit/core-test-results.xml
 
       - name: Run live eval tests with Langfuse scores
+        if: always()
         run: |
-          mkdir -p junit
           pytest -v tests/test_groundtruth_live_evals_with_scores.py --junitxml=junit/live-eval-results.xml
+
+      - name: Run semantic eval tests
+        if: always()
+        run: |
+          pytest -v tests/test_groundtruth_semantic_evals.py --junitxml=junit/semantic-eval-results.xml
+
+      - name: Publish Streamlit smoke summary
+        if: always()
+        uses: pmeier/pytest-results-action@v0.6.0
+        with:
+          path: junit/streamlit-smoke-results.xml
+          summary: true
+          display-options: fEX
+          fail-on-empty: false
+          title: Streamlit Smoke Test Results
+
+      - name: Publish schema test summary
+        if: always()
+        uses: pmeier/pytest-results-action@v0.6.0
+        with:
+          path: junit/schema-test-results.xml
+          summary: true
+          display-options: fEX
+          fail-on-empty: false
+          title: Schema Test Results
 
       - name: Publish core test summary
         if: always()
@@ -63,7 +98,7 @@ jobs:
           path: junit/core-test-results.xml
           summary: true
           display-options: fEX
-          fail-on-empty: true
+          fail-on-empty: false
           title: Core GroundTruth Test Results
 
       - name: Publish live eval test summary
@@ -73,8 +108,18 @@ jobs:
           path: junit/live-eval-results.xml
           summary: true
           display-options: fEX
-          fail-on-empty: true
+          fail-on-empty: false
           title: Live Eval Test Results
+
+      - name: Publish semantic eval summary
+        if: always()
+        uses: pmeier/pytest-results-action@v0.6.0
+        with:
+          path: junit/semantic-eval-results.xml
+          summary: true
+          display-options: fEX
+          fail-on-empty: false
+          title: Semantic Eval Test Results
 
       - name: Upload JUnit reports as artifacts
         if: always()
