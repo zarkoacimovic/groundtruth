@@ -13,6 +13,7 @@ permissions:
 jobs:
   streamlit:
     runs-on: ubuntu-latest
+
     env:
       GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
       LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}
@@ -23,23 +24,62 @@ jobs:
       LANGSMITH_TRACING: "false"
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-      - uses: actions/setup-python@v5
+      - name: Set up Python
+        uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+          cache: "pip"
 
       - name: Install dependencies
         run: |
+          python -m pip install --upgrade pip
           pip install -r requirements.txt
-          pip install pytest
+          pip install pytest pytest-cov
 
-      - uses: streamlit/streamlit-app-action@v0.0.3
+      - name: Streamlit smoke validation
+        uses: streamlit/streamlit-app-action@v0.0.3
         with:
           app-path: app/main.py
-          skip-smoke: true
-          pytest-args: -v tests/test_groundtruth.py
+          skip-smoke: false
+          pytest-args: -q
+
+      - name: Run core GroundTruth tests
+        run: |
+          mkdir -p junit
+          pytest -v tests/test_groundtruth.py --junitxml=junit/core-test-results.xml
 
       - name: Run live eval tests with Langfuse scores
         run: |
-          pytest -v tests/test_groundtruth_live_evals_with_scores.py
+          mkdir -p junit
+          pytest -v tests/test_groundtruth_live_evals_with_scores.py --junitxml=junit/live-eval-results.xml
+
+      - name: Publish core test summary
+        if: always()
+        uses: pmeier/pytest-results-action@v0.6.0
+        with:
+          path: junit/core-test-results.xml
+          summary: true
+          display-options: fEX
+          fail-on-empty: true
+          title: Core GroundTruth Test Results
+
+      - name: Publish live eval test summary
+        if: always()
+        uses: pmeier/pytest-results-action@v0.6.0
+        with:
+          path: junit/live-eval-results.xml
+          summary: true
+          display-options: fEX
+          fail-on-empty: true
+          title: Live Eval Test Results
+
+      - name: Upload JUnit reports as artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: junit-reports
+          path: junit/*.xml
+          retention-days: 7
