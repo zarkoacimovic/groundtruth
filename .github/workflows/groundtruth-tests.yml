@@ -39,3 +39,7 @@ jobs:
           app-path: app/main.py
           skip-smoke: true
           pytest-args: -v tests/test_groundtruth.py
+
+      - name: Run live eval tests with Langfuse scores
+        run: |
+          pytest -v tests/test_groundtruth_live_evals_with_scores.py
